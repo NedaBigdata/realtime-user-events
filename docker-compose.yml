@@ -1,39 +1,10 @@
-version: "3.8"
-
-x-airflow-common: &airflow-common
-  image: docker.arvancloud.ir/apache/airflow:2.9.1-python3.11
-  environment: &airflow-env
-    AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-    AIRFLOW__CORE__FERNET_KEY: ''
-    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
-    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
-    POSTGRES_USER: ${POSTGRES_USER}
-    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    POSTGRES_DB: ${POSTGRES_DB}
-    POSTGRES_HOST: postgres
-    REDPANDA_BOOTSTRAP: redpanda:9092   # تغییر نام متغیر (اختیاری) - همچنان برای پروژه شما KAFKA_BOOTSTRAP قابل استفاده است
-    KAFKA_TOPIC: ${KAFKA_TOPIC}
-    CLICKHOUSE_HOST: clickhouse
-    CLICKHOUSE_PORT: 8123
-    CLICKHOUSE_USER: ${CLICKHOUSE_USER}
-    CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
-    CLICKHOUSE_DB: ${CLICKHOUSE_DB}
-  volumes:
-    - ./dags:/opt/airflow/dags
-    - ./scripts:/opt/airflow/scripts
-    - airflow-logs:/opt/airflow/logs
-  user: "${AIRFLOW_UID:-50000}:0"
-  depends_on:
-    postgres:
-      condition: service_healthy
+name: realtime-user-events
 
 services:
-  # ---------- PostgreSQL ----------
   postgres:
-    image: docker.arvancloud.ir/postgres:15
-    container_name: postgres
+    image: postgres:16-alpine
+    container_name: rte_postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -41,355 +12,299 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./sql/postgres_init.sql:/docker-entrypoint-initdb.d/init.sql
+      - pg_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
+      timeout: 5s
       retries: 10
 
-  # ---------- Redpanda (جایگزین Kafka) ----------
   redpanda:
-    image: docker.arvancloud.ir/redpandadata/redpanda:v24.2.7
-    container_name: redpanda
-    hostname: redpanda
+    image: redpandadata/redpanda:v24.1.7
+    container_name: rte_redpanda
+    restart: unless-stopped
     command:
       - redpanda
       - start
-      - --smp 1
+      - --mode
+      - dev-container
+      - --smp
+      - "1"
+      - --memory
+      - 1G
+      - --reserve-memory
+      - 0M
       - --overprovisioned
-      - --node-id 0
-      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
-      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
-      - --rpc-addr redpanda:33145
-      - --advertise-rpc-addr redpanda:33145
-      - --mode dev-container
-      - --default-log-level info
+      - --node-id
+      - "0"
+      - --check=false
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
     ports:
-      - "19092:19092"   # دسترسی از خارج داکر (اختیاری، برای ابزارهای میزبان)
-      - "9644:9644"     # Admin API
+      - "9092:9092"
+      - "9644:9644"
     volumes:
-      - redpanda-data:/var/lib/redpanda/data
+      - redpanda_data:/var/lib/redpanda/data
     healthcheck:
-      test: ["CMD", "rpk", "cluster", "info", "--api-urls", "localhost:9644"]
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
 
-  # ---------- ClickHouse ----------
-  clickhouse:
-    image: docker.arvancloud.ir/clickhouse/clickhouse-server:24.3
-    container_name: clickhouse
-    ports:
-      - "8123:8123"
-      - "9000:9000"
+  redpanda-console:
+    image: redpandadata/console:latest
+    container_name: rte_redpanda_console
+    restart: unless-stopped
+    depends_on:
+      redpanda:
+        condition: service_healthy
     environment:
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
-      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
-      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
-    volumes:
-      - clickhouse-data:/var/lib/clickhouse
-      - ./scripts/init_clickhouse.sql:/docker-entrypoint-initdb.d/init.sql
-    ulimits:
-      nofile:
-        soft: 262144
-        hard: 262144
+      KAFKA_BROKERS: redpanda:29092
+    ports:
+      - "8090:8080"
 
   # ---------- Airflow ----------
   airflow-init:
-    <<: *airflow-common
-    container_name: airflow-init
+    image: apache/airflow:2.9.3-python3.11
+    container_name: rte_airflow_init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__FERNET_KEY: ""
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      _PIP_ADDITIONAL_REQUIREMENTS: "requests==2.32.3 psycopg2-binary==2.9.9"
+      AIRFLOW_CONN_POSTGRES_RTE: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
+      PIP_INDEX_URL: "https://package-mirror.liara.ir/repository/pypi/simple"
+      PIP_TRUSTED_HOST: "package-mirror.liara.ir"
+      AIRFLOW__WEBSERVER__SECRET_KEY: "264fb4c4b36b831567f5ff2339478e468ad77a3614e2b28c5ef98fcc62474854"
+      AIRFLOW__CORE__HOSTNAME_CALLABLE: "socket.gethostname"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432     
     entrypoint: /bin/bash
     command:
       - -c
       - |
         airflow db init &&
         airflow users create \
-          --username ${AIRFLOW_ADMIN_USER} \
-          --password ${AIRFLOW_ADMIN_PASSWORD} \
-          --firstname Admin --lastname User \
-          --role Admin --email admin@example.com
+          --username admin \
+          --password admin \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
 
   airflow-webserver:
-    <<: *airflow-common
-    container_name: airflow-webserver
-    command: webserver
-    ports:
-      - "8080:8080"
+    image: apache/airflow:2.9.3-python3.11
+    container_name: rte_airflow_webserver
+    restart: unless-stopped
     depends_on:
       airflow-init:
         condition: service_completed_successfully
-
-  airflow-scheduler:
-    <<: *airflow-common
-    container_name: airflow-scheduler
-    command: scheduler
-    depends_on:
-      airflow-init:
-        condition: service_completed_successfully
-
-  # ---------- Kafka Producer (متصل به Redpanda) ----------
-  kafka-producer:
-    image: docker.arvancloud.ir/python:3.11-slim
-    container_name: kafka-producer
-    working_dir: /app
-    volumes:
-      - ./scripts:/app
-    command: >
-      bash -c "pip install psycopg2-binary kafka-python &&
-      python kafka_producer.py"
-    environment:
-      POSTGRES_HOST: postgres
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-      KAFKA_BOOTSTRAP: redpanda:9092   # آدرس جدید Redpanda
-      KAFKA_TOPIC: ${KAFKA_TOPIC}
-    depends_on:
-      redpanda:
-        condition: service_healthy
       postgres:
         condition: service_healthy
-    restart: unless-stopped
-
-  # ---------- Kafka Consumer (متصل به Redpanda) ----------
-  kafka-consumer:
-    build:
-      context: .
-      dockerfile: Dockerfile.consumer
-    container_name: kafka-consumer
     environment:
-      KAFKA_BOOTSTRAP: redpanda:9092   # آدرس جدید Redpanda
-      KAFKA_TOPIC: ${KAFKA_TOPIC}
-      CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PORT: 8123
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
-      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
-    depends_on:
-      redpanda:
-        condition: service_healthy
-      clickhouse:
-        condition: service_started
-    restart: unless-stopped
-
-  # ---------- Superset ----------
-  superset:
-    build:
-      context: ./superset
-      dockerfile: Dockerfile
-    container_name: superset
-    ports:
-      - "8088:8088"
-    environment:
-      SUPERSET_SECRET_KEY: 'a1b2c3d4e5f6g7h8i9j0-replace-in-prod'
-    volumes:
-      - superset-data:/app/superset_home
-    depends_on:
-      clickhouse:
-        condition: service_started
-
-volumes:
-  postgres-data:
-  redpanda-data:
-  clickhouse-data:
-  airflow-logs:
-  superset-data:version: "3.8"
-
-x-airflow-common: &airflow-common
-  image: docker.arvancloud.ir/apache/airflow:2.9.1-python3.11
-  environment: &airflow-env
-    AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-    AIRFLOW__CORE__FERNET_KEY: ''
-    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
-    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
-    POSTGRES_USER: ${POSTGRES_USER}
-    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    POSTGRES_DB: ${POSTGRES_DB}
-    POSTGRES_HOST: postgres
-    REDPANDA_BOOTSTRAP: redpanda:9092   # تغییر نام متغیر (اختیاری) - همچنان برای پروژه شما KAFKA_BOOTSTRAP قابل استفاده است
-    KAFKA_TOPIC: ${KAFKA_TOPIC}
-    CLICKHOUSE_HOST: clickhouse
-    CLICKHOUSE_PORT: 8123
-    CLICKHOUSE_USER: ${CLICKHOUSE_USER}
-    CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
-    CLICKHOUSE_DB: ${CLICKHOUSE_DB}
-  volumes:
-    - ./dags:/opt/airflow/dags
-    - ./scripts:/opt/airflow/scripts
-    - airflow-logs:/opt/airflow/logs
-  user: "${AIRFLOW_UID:-50000}:0"
-  depends_on:
-    postgres:
-      condition: service_healthy
-
-services:
-  # ---------- PostgreSQL ----------
-  postgres:
-    image: docker.arvancloud.ir/postgres:15
-    container_name: postgres
-    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__FERNET_KEY: ""
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      _PIP_ADDITIONAL_REQUIREMENTS: "requests==2.32.3 psycopg2-binary==2.9.9"
+      AIRFLOW_CONN_POSTGRES_RTE: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
+      PIP_INDEX_URL: "https://package-mirror.liara.ir/repository/pypi/simple"
+      PIP_TRUSTED_HOST: "package-mirror.liara.ir"
+      AIRFLOW__WEBSERVER__SECRET_KEY: "264fb4c4b36b831567f5ff2339478e468ad77a3614e2b28c5ef98fcc62474854"
+      AIRFLOW__CORE__HOSTNAME_CALLABLE: "socket.gethostname"
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
     ports:
-      - "5432:5432"
+      - "8085:8080"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./sql/postgres_init.sql:/docker-entrypoint-initdb.d/init.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 5s
-      retries: 10
+      - ./airflow/dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+    command: webserver
 
-  # ---------- Redpanda (جایگزین Kafka) ----------
-  redpanda:
-    image: docker.arvancloud.ir/redpandadata/redpanda:v24.2.7
-    container_name: redpanda
-    hostname: redpanda
-    command:
-      - redpanda
-      - start
-      - --smp 1
-      - --overprovisioned
-      - --node-id 0
-      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
-      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
-      - --rpc-addr redpanda:33145
-      - --advertise-rpc-addr redpanda:33145
-      - --mode dev-container
-      - --default-log-level info
-    ports:
-      - "19092:19092"   # دسترسی از خارج داکر (اختیاری، برای ابزارهای میزبان)
-      - "9644:9644"     # Admin API
+  airflow-scheduler:
+    image: apache/airflow:2.9.3-python3.11
+    container_name: rte_airflow_scheduler
+    hostname: airflow-scheduler
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__FERNET_KEY: ""
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      _PIP_ADDITIONAL_REQUIREMENTS: "requests==2.32.3 psycopg2-binary==2.9.9"
+      AIRFLOW_CONN_POSTGRES_RTE: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
+      PIP_INDEX_URL: "https://package-mirror.liara.ir/repository/pypi/simple"
+      PIP_TRUSTED_HOST: "package-mirror.liara.ir"
+      AIRFLOW__WEBSERVER__SECRET_KEY: "264fb4c4b36b831567f5ff2339478e468ad77a3614e2b28c5ef98fcc62474854"
+      AIRFLOW__CORE__HOSTNAME_CALLABLE: "socket.gethostname"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432   
     volumes:
-      - redpanda-data:/var/lib/redpanda/data
-    healthcheck:
-      test: ["CMD", "rpk", "cluster", "info", "--api-urls", "localhost:9644"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
+      - ./airflow/dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+    command: scheduler
   # ---------- ClickHouse ----------
   clickhouse:
-    image: docker.arvancloud.ir/clickhouse/clickhouse-server:24.3
-    container_name: clickhouse
-    ports:
-      - "8123:8123"
-      - "9000:9000"
+    image: clickhouse/clickhouse-server:24.8-alpine
+    container_name: rte_clickhouse
+    restart: unless-stopped
     environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
-      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "8123:8123"
+      - "9001:9000"
     volumes:
-      - clickhouse-data:/var/lib/clickhouse
-      - ./scripts/init_clickhouse.sql:/docker-entrypoint-initdb.d/init.sql
+      - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
+      - ./clickhouse/ipv4-only.xml:/etc/clickhouse-server/config.d/ipv4-only.xml:ro
+
+    healthcheck:
+      test:
+        - CMD
+        - clickhouse-client
+        - --user
+        - ${CLICKHOUSE_USER}
+        - --password
+        - ${CLICKHOUSE_PASSWORD}
+        - --query
+        - "SELECT 1"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
     ulimits:
       nofile:
         soft: 262144
         hard: 262144
 
-  # ---------- Airflow ----------
-  airflow-init:
-    <<: *airflow-common
-    container_name: airflow-init
-    entrypoint: /bin/bash
-    command:
-      - -c
-      - |
-        airflow db init &&
-        airflow users create \
-          --username ${AIRFLOW_ADMIN_USER} \
-          --password ${AIRFLOW_ADMIN_PASSWORD} \
-          --firstname Admin --lastname User \
-          --role Admin --email admin@example.com
-
-  airflow-webserver:
-    <<: *airflow-common
-    container_name: airflow-webserver
-    command: webserver
-    ports:
-      - "8080:8080"
+  # ---------- Producer (Postgres -> Kafka) ----------
+  producer:
+    build:
+      context: ./producer
+    container_name: rte_producer
+    restart: unless-stopped
     depends_on:
-      airflow-init:
-        condition: service_completed_successfully
-
-  airflow-scheduler:
-    <<: *airflow-common
-    container_name: airflow-scheduler
-    command: scheduler
-    depends_on:
-      airflow-init:
-        condition: service_completed_successfully
-
-  # ---------- Kafka Producer (متصل به Redpanda) ----------
-  kafka-producer:
-    image: docker.arvancloud.ir/python:3.11-slim
-    container_name: kafka-producer
-    working_dir: /app
-    volumes:
-      - ./scripts:/app
-    command: >
-      bash -c "pip install psycopg2-binary kafka-python &&
-      python kafka_producer.py"
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
     environment:
       POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-      KAFKA_BOOTSTRAP: redpanda:9092   # آدرس جدید Redpanda
-      KAFKA_TOPIC: ${KAFKA_TOPIC}
+      KAFKA_BROKER: redpanda:29092
+      KAFKA_TOPIC: user_events
+      POLL_INTERVAL: "10"
+      BATCH_SIZE: "100"
+
+  # ---------- Consumer (Kafka -> ClickHouse) ----------
+  consumer:
+    build:
+      context: ./consumer
+    container_name: rte_consumer
+    restart: unless-stopped
     depends_on:
       redpanda:
         condition: service_healthy
-      postgres:
+      clickhouse:
         condition: service_healthy
-    restart: unless-stopped
-
-  # ---------- Kafka Consumer (متصل به Redpanda) ----------
-  kafka-consumer:
-    build:
-      context: .
-      dockerfile: Dockerfile.consumer
-    container_name: kafka-consumer
     environment:
-      KAFKA_BOOTSTRAP: redpanda:9092   # آدرس جدید Redpanda
-      KAFKA_TOPIC: ${KAFKA_TOPIC}
+      KAFKA_BROKER: redpanda:29092
+      KAFKA_TOPIC: user_events
+      KAFKA_GROUP: clickhouse-consumer
       CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_PORT: "8123"
       CLICKHOUSE_USER: ${CLICKHOUSE_USER}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
       CLICKHOUSE_DB: ${CLICKHOUSE_DB}
-    depends_on:
-      redpanda:
-        condition: service_healthy
-      clickhouse:
-        condition: service_started
-    restart: unless-stopped
+      BATCH_SIZE: "100"
 
   # ---------- Superset ----------
+  superset-init:
+    build:
+      context: ./superset
+    container_name: rte_superset_init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      SUPERSET_DB: ${SUPERSET_DB}
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
+    volumes:
+      - ./superset/superset_config.py:/app/pythonpath/superset_config.py:ro
+    command:
+      - /bin/bash
+      - -c
+      - |
+        superset db upgrade &&
+        (superset fab create-admin \
+          --username admin \
+          --password admin \
+          --firstname Admin \
+          --lastname User \
+          --email admin@example.com || true) &&
+        superset init
+
   superset:
     build:
       context: ./superset
-      dockerfile: Dockerfile
-    container_name: superset
+    container_name: rte_superset
+    restart: unless-stopped
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      SUPERSET_DB: ${SUPERSET_DB}
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
     ports:
       - "8088:8088"
-    environment:
-      SUPERSET_SECRET_KEY: 'a1b2c3d4e5f6g7h8i9j0-replace-in-prod'
     volumes:
-      - superset-data:/app/superset_home
-    depends_on:
-      clickhouse:
-        condition: service_started
+      - ./superset/superset_config.py:/app/pythonpath/superset_config.py:ro
+    command: /usr/bin/run-server.sh
 
 volumes:
-  postgres-data:
-  redpanda-data:
-  clickhouse-data:
-  airflow-logs:
-  superset-data:
+  pg_data:
+  redpanda_data:
+  airflow_logs:   
+  clickhouse_data:

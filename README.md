@@ -2,7 +2,7 @@
 
 An end-to-end data engineering pipeline that ingests user data from [randomuser.me](https://randomuser.me), streams it through Kafka (Redpanda), stores it in ClickHouse, and visualizes real-time analytics in Apache Superset.
 
-![Realtime Dashboard](docs/screenshots/01_superset_dashboard.png)
+![Realtime Dashboard](docs/01_superset_dashboard.png)
 
 ## 📐 Architecture
 
@@ -113,16 +113,16 @@ Superset → **Dashboards** → **Realtime User Events**
 ## 📊 What You'll See
 
 ### Superset Dashboard
-![Dashboard](docs/screenshots/01_superset_dashboard.png)
+![Dashboard](docs/01_superset_dashboard.png)
 
 ### Airflow DAG
-![Airflow](docs/screenshots/02_airflow_dag.png)
+![Airflow](docs/02_airflow_dag.png)
 
 ### Redpanda Messages (real-time stream)
-![Redpanda](docs/screenshots/04_redpanda_messages.png)
+![Redpanda](docs/03_redpanda_messages.png)
 
 ### Consumer lag = 0 (healthy pipeline)
-![Consumer Group](docs/screenshots/05_redpanda_consumer_group.png)
+![Consumer Group](docs/04_redpanda_consumer_group.png)
 
 ## 📁 Project Structure
 

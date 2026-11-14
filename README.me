@@ -2,7 +2,7 @@
 
 An end-to-end data engineering pipeline that ingests user data from [randomuser.me](https://randomuser.me), streams it through Kafka (Redpanda), stores it in ClickHouse, and visualizes real-time analytics in Apache Superset.
 
-![Architecture](docs/screenshots/01_superset_dashboard.png)
+![Realtime Dashboard](docs/screenshots/01_superset_dashboard.png)
 
 ## 📐 Architecture
 
@@ -141,12 +141,14 @@ realtime-user-events/
 
 ## 🧪 Verifying the Pipeline
 
+> Replace `rte_user`/`rte_pass` with the values from your `.env` if you changed them.
+
 ```bash
 # 1. Count raw events in Postgres
 docker exec rte_postgres psql -U rte_user -d user_events -c "SELECT count(*) FROM users_raw;"
 
-# 2. Check Kafka topic has messages
-docker exec rte_redpanda rpk topic consume user_events --num 3
+# 2. Check Kafka topic has messages (Ctrl+C to stop)
+docker exec -it rte_redpanda rpk topic consume user_events
 
 # 3. Count events in ClickHouse
 docker exec rte_clickhouse clickhouse-client --user rte_user --password rte_pass \

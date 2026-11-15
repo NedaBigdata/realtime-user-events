@@ -205,32 +205,6 @@ docker compose down -v && docker compose up -d
 Check that `.env`'s `CLICKHOUSE_DB` matches the schema created by `clickhouse/init/01_schema.sql` (default: `analytics`). A mismatch was the most common error during development.
 </details>
 
-## 🌍 Iran / Windows Notes
-
-- **Docker registry mirrors**: See [Troubleshooting](#-troubleshooting)
-- **PyPI mirror**: Set `PIP_INDEX_URL` in all Dockerfiles (already done)
-- **Git Bash path conversion**: Set `export MSYS_NO_PATHCONV=1` in `~/.bashrc`, or use `//var/log/...` in `docker exec` commands.
-- **XML config files**: Save with UTF-8 **without BOM** and LF line endings.
-
-## 📈 Production Hardening (out of scope for this demo)
-
-- Enable Talisman + CSP in Superset (`TALISMAN_ENABLED=True`)
-- Move Superset rate limiting to Redis (`RATELIMIT_STORAGE_URI=redis://...`)
-- Use Airflow with `CeleryExecutor` + Redis + Postgres for scalability
-- Add Prometheus metrics for producer/consumer lag
-- Use a real Kafka cluster with replication factor ≥ 3
-- Move secrets to HashiCorp Vault or AWS Secrets Manager
-- Replace `.env` with Kubernetes Secrets or Docker Swarm secrets
-
-## 📚 What I Learned
-
-- Designing an ELT pipeline with proper staging vs. analytics separation
-- Streaming semantics: at-least-once delivery, idempotent aggregation
-- ClickHouse Materialized Views with `AggregatingMergeTree` and `*State`/`*Merge` functions
-- Docker Compose multi-service orchestration with healthchecks and dependency ordering
-- Airflow DAG design and 12-factor configuration
-- Superset dataset + dashboard modeling
-- Operating a full stack in a restricted-network environment (Iran)
 
 ## 👤 Author
 

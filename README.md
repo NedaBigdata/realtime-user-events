@@ -234,4 +234,4 @@ Check that `.env`'s `CLICKHOUSE_DB` matches the schema created by `clickhouse/in
 
 ## 👤 Author
 
-**Your Name** — [LinkedIn](https://linkedin.com/in/your-handle) · [GitHub](https://github.com/your-username)
+**Your Name** — [LinkedIn](https://www.linkedin.com/in/neda-ghorbani-bigdata) · [GitHub](https://github.com/NedaBigdata)

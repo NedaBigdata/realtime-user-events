@@ -159,52 +159,6 @@ docker exec rte_clickhouse clickhouse-client --user rte_user --password rte_pass
   --query "SELECT * FROM analytics.v_hourly LIMIT 5 FORMAT Pretty"
 ```
 
-## 🐛 Troubleshooting
-
-<details>
-<summary><b>Docker images won't download (Iran sanctions)</b></summary>
-
-Configure Docker registry mirrors in `/etc/docker/daemon.json` (Linux) or Docker Desktop settings. Recommended mirrors for Iran:
-- `https://docker.ththt.ir`
-- `https://docker.3cn.ir`
-- `https://docker.arvancloud.ir`
-</details>
-
-<details>
-<summary><b>Airflow "Could not find a version that satisfies requests==..."</b></summary>
-
-PyPI is blocked. The Dockerfiles set `PIP_INDEX_URL` to an Iranian mirror. If Liara is slow, try:
-- Kargadan: `https://mirror.kargadan.ir/repository/pypi-group/simple/`
-- Runflare: `https://mirror-pypi.runflare.com/simple`
-</details>
-
-<details>
-<summary><b>ClickHouse unhealthy — "Address family for hostname not supported"</b></summary>
-
-Docker bridge network doesn't support IPv6 but ClickHouse binds to `[::]` by default. The fix is in `clickhouse/ipv4-only.xml` (mounted to `/etc/clickhouse-server/config.d/`) which sets `<listen_host>0.0.0.0</listen_host>`. Verify the file has no BOM: `od -An -tx1 -N16 clickhouse/ipv4-only.xml` should start with `3c 63 6c 69`.
-</details>
-
-<details>
-<summary><b>Airflow task log shows 404</b></summary>
-
-`airflow-webserver` and `airflow-scheduler` must share the same logs volume. We use a named volume `airflow_logs` for both. Also set `AIRFLOW__CORE__HOSTNAME_CALLABLE=socket.gethostname`.
-</details>
-
-<details>
-<summary><b>Postgres init script didn't run</b></summary>
-
-Scripts in `/docker-entrypoint-initdb.d/` only run **once** on an empty data volume. To re-run:
-```bash
-docker compose down -v && docker compose up -d
-```
-</details>
-
-<details>
-<summary><b>Superset "Table X does not exist"</b></summary>
-
-Check that `.env`'s `CLICKHOUSE_DB` matches the schema created by `clickhouse/init/01_schema.sql` (default: `analytics`). A mismatch was the most common error during development.
-</details>
-
 
 ## 👤 Author
 
